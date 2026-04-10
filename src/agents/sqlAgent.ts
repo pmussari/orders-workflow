@@ -1,8 +1,10 @@
-const { callOllama } = require('./ollama')
+import { callOllama } from './ollama';
+
+import { OllamaConfig, OrderAction } from '../types';
 
 const SCHEMA = `Tablas disponibles:
   orders(id, identifier, chat_id, status, created_at)   -- status: active|cancelled|completed
-  order_items(id, order_id, name, quantity)`
+  order_items(id, order_id, name, quantity)`;
 
 const SYSTEM_PROMPT = `Eres un generador de acciones para un sistema de pedidos.
 Se te proporciona la intención ya clasificada y las entidades extraídas. Tu único trabajo es traducirlas a la acción JSON correcta.
@@ -20,7 +22,7 @@ Acciones y params:
 - add_item:       {"identifier":"ORDEN-XXX","name":"...","quantity":N}
 - remove_item:    {"identifier":"ORDEN-XXX","name":"..."}
 - modify_item:    {"identifier":"ORDEN-XXX","name":"...","quantity":N}
-- none:           {}`
+- none:           {}`;
 
 const FEW_SHOTS = [
   {
@@ -71,51 +73,54 @@ const FEW_SHOTS = [
     role: 'assistant',
     content: '{"action":"none","params":{},"message":"¡Hola! ¿En qué puedo ayudarte con tu pedido?"}',
   },
-]
+];
 
-function extractJson(text) {
-  let start = text.indexOf('{')
+function extractJson(text: string): OrderAction | null {
+  let start = text.indexOf('{');
   while (start !== -1) {
-    let depth = 0, end = -1
+    let depth = 0;
+    let end = -1;
     for (let i = start; i < text.length; i++) {
-      if (text[i] === '{') depth++
-      else if (text[i] === '}') { depth--; if (depth === 0) { end = i; break } }
+      if (text[i] === '{') depth++;
+      else if (text[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
     }
     if (end !== -1) {
       try {
-        const parsed = JSON.parse(text.slice(start, end + 1))
-        if (parsed.action) return parsed
-      } catch {}
+        const parsed = JSON.parse(text.slice(start, end + 1)) as Record<string, unknown>;
+        if (typeof parsed.action === 'string') return parsed as unknown as OrderAction;
+      } catch { /* try next */ }
     }
-    start = text.indexOf('{', start + 1)
+    start = text.indexOf('{', start + 1);
   }
-  return null
+  return null;
 }
 
-async function generateAction(intent, entities, userText, chatId, config, getCustomerContext) {
-  const customerContext = getCustomerContext()
-  const userMessage = `intent: ${intent} | entities: ${JSON.stringify(entities)} | message: "${userText}"`
+export async function generateAction(
+  intent: string,
+  entities: Record<string, unknown>,
+  userText: string,
+  chatId: number,
+  config: OllamaConfig,
+  getCustomerContext: () => string,
+): Promise<OrderAction> {
+  const customerContext = getCustomerContext();
+  const userMessage = `intent: ${intent} | entities: ${JSON.stringify(entities)} | message: "${userText}"`;
 
-  const systemWithContext = `${SYSTEM_PROMPT}
-
-PEDIDOS DEL CLIENTE:
-${customerContext}`
+  const systemWithContext = `${SYSTEM_PROMPT}\n\nPEDIDOS DEL CLIENTE:\n${customerContext}`;
 
   const messages = [
     { role: 'system', content: systemWithContext },
     ...FEW_SHOTS,
     { role: 'user', content: userMessage },
-  ]
+  ];
 
-  const raw = await callOllama(messages, config)
-  console.log(`[sqlAgent raw] ${raw}`)
+  const raw = await callOllama(messages, config);
+  console.log(`[sqlAgent raw] ${raw}`);
 
-  const parsed = extractJson(raw)
+  const parsed = extractJson(raw);
   if (!parsed) {
-    console.warn('[sqlAgent] could not parse response:', raw)
-    return { action: 'none', params: {}, message: 'No pude procesar tu solicitud. Por favor intenta de nuevo.' }
+    console.warn('[sqlAgent] could not parse response:', raw);
+    return { action: 'none', params: {} as Record<string, never>, message: 'No pude procesar tu solicitud. Por favor intenta de nuevo.' };
   }
-  return parsed
+  return parsed;
 }
-
-module.exports = { generateAction }

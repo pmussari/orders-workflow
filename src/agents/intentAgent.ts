@@ -1,4 +1,6 @@
-const { callOllama } = require('./ollama')
+import { callOllama } from './ollama';
+
+import { OllamaConfig, IntentResult } from '../types';
 
 const SYSTEM_PROMPT = `Eres un clasificador de intenciones para un bot de pedidos.
 Analiza el mensaje y responde SOLO con JSON válido, sin texto adicional.
@@ -13,7 +15,7 @@ Intenciones válidas y sus entities:
 - cancel_order:   {"identifier":"ORDEN-XXX|null"}
 - complete_order: {"identifier":"ORDEN-XXX|null"}
 - query_orders:   {"status":"active|cancelled|completed|null","item":"nombre|null"}
-- none:           {}`
+- none:           {}`;
 
 const FEW_SHOTS = [
   { role: 'user', content: 'Quiero crear una orden con 2 pizzas y 1 coca cola' },
@@ -32,40 +34,44 @@ const FEW_SHOTS = [
   { role: 'assistant', content: '{"intent":"none","entities":{}}' },
   { role: 'user', content: 'Buenas tardes' },
   { role: 'assistant', content: '{"intent":"none","entities":{}}' },
-]
+];
 
-function extractJson(text) {
-  let start = text.indexOf('{')
+function extractJson(text: string): IntentResult | null {
+  let start = text.indexOf('{');
   while (start !== -1) {
-    let depth = 0, end = -1
+    let depth = 0;
+    let end = -1;
     for (let i = start; i < text.length; i++) {
-      if (text[i] === '{') depth++
-      else if (text[i] === '}') { depth--; if (depth === 0) { end = i; break } }
+      if (text[i] === '{') depth++;
+      else if (text[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
     }
     if (end !== -1) {
       try {
-        const parsed = JSON.parse(text.slice(start, end + 1))
-        if (parsed.intent) return parsed
-      } catch {}
+        const parsed = JSON.parse(text.slice(start, end + 1)) as Record<string, unknown>;
+        if (typeof parsed.intent === 'string') {
+          return {
+            intent: parsed.intent,
+            entities: (parsed.entities as Record<string, unknown>) ?? {},
+          };
+        }
+      } catch { /* try next */ }
     }
-    start = text.indexOf('{', start + 1)
+    start = text.indexOf('{', start + 1);
   }
-  return null
+  return null;
 }
 
-async function detectIntent(userText, config) {
+export async function detectIntent(userText: string, config: OllamaConfig): Promise<IntentResult> {
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
     ...FEW_SHOTS,
     { role: 'user', content: userText },
-  ]
-  const raw = await callOllama(messages, config)
-  const parsed = extractJson(raw)
+  ];
+  const raw = await callOllama(messages, config);
+  const parsed = extractJson(raw);
   if (!parsed) {
-    console.warn('[intentAgent] could not parse response:', raw)
-    return { intent: 'none', entities: {} }
+    console.warn('[intentAgent] could not parse response:', raw);
+    return { intent: 'none', entities: {} };
   }
-  return { intent: parsed.intent, entities: parsed.entities || {} }
+  return parsed;
 }
-
-module.exports = { detectIntent }

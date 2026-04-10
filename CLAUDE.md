@@ -5,30 +5,42 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-npm install    # Install dependencies
-npm start      # Run the bot (node index.js)
+npm install        # Install dependencies
+npm run build      # Compile TypeScript → dist/
+npm start          # Run the compiled bot (node dist/index.js)
+npm run dev        # Run directly with ts-node (no build step)
 ```
 
 No test suite exists yet (`npm test` is a placeholder).
 
 ## Architecture
 
-This is a Node.js Telegram bot that manages customer orders via conversational AI. It uses long-polling (not webhooks).
+This is a Node.js Telegram bot that manages customer orders via conversational AI. It uses long-polling (not webhooks). All source files are TypeScript under `src/`, compiled to `dist/` by `tsc`.
 
-**Two source files:**
-- `index.js` — Bot entry point, message handlers, Ollama LLM integration, voice transcription pipeline
-- `db.js` — SQLite database layer (orders + order_items tables, CRUD operations)
+**Source layout:**
+```
+src/
+  types.ts               — Shared types, interfaces, and discriminated unions
+  index.ts               — Bot entry point, message handlers, voice transcription pipeline
+  db.ts                  — SQLite database layer (orders + order_items tables, CRUD operations)
+  agents/
+    ollama.ts            — HTTP client for Ollama LLM API
+    intentAgent.ts       — Intent classification agent (LLM → IntentResult)
+    sqlAgent.ts          — Action generation agent (intent → OrderAction)
+dist/                    — Compiled output (gitignored)
+```
 
 **Message flow:**
 1. Telegram message received (text or voice)
 2. Voice messages: download → transcribe via `whisper` CLI → text
-3. Text sent to Ollama (local LLM at `localhost:11434`) with system prompt + customer's existing orders as context
-4. LLM returns JSON with an `action` field (`create_order`, `add_item`, `remove_item`, `modify_item`, `cancel_order`, `complete_order`, `list_orders`, `none`)
-5. JSON parsed, database updated, response sent to user
+3. `detectIntent()` calls Ollama to classify the intent + extract entities
+4. `generateAction()` calls Ollama to translate intent → `OrderAction` (discriminated union)
+5. Action dispatched in a typed switch, database updated, response sent to user
 
 **External dependencies (not in package.json, must be running separately):**
 - Ollama (local LLM inference) — default `localhost:11434`, model `llama2:7b`
-- OpenAI Whisper CLI — only needed for voice message handling
+- `ffmpeg` — required by `nodejs-whisper` to handle `.oga` voice files from Telegram
+- A downloaded Whisper model — run `npx nodejs-whisper download` to fetch it
 
 **Database schema (SQLite, `orders.db`):**
 - `orders`: id, identifier (ORDEN-001...), chat_id, status (active/cancelled/completed), created_at
@@ -44,10 +56,13 @@ BOT_TOKEN=<required — get from @BotFather>
 OLLAMA_HOST=localhost
 OLLAMA_PORT=11434
 OLLAMA_MODEL=llama2:7b
+WHISPER_MODEL=small   # tiny | base | small | medium | large-v1 | large (default: small)
 ```
 
 ## Key Implementation Notes
 
 - The bot is in Spanish — system prompt and all user-facing messages use Spanish
-- `index.js` has a robust JSON extractor function to handle LLM outputs that include extra text around the JSON block
+- LLM responses are extracted from raw text by `extractJson()` (handles extra text around the JSON block)
 - The system prompt includes few-shot examples and injects the customer's current orders on every request
+- `OrderAction` in `src/types.ts` is a discriminated union; the switch in `src/index.ts` has a `never` exhaustiveness check
+- TypeScript strict mode is enabled (`tsconfig.json`) — no `any`, all errors are type errors
